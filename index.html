@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🛥️ Siloq Maritime Dashboard</title>
+
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        #map { height: 450px; }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-cyan-100 min-h-screen">
+
+<!-- HEADER -->
+<header class="bg-gradient-to-r from-blue-800 to-cyan-700 text-white shadow-lg p-4">
+    <div class="flex justify-between items-center">
+        <div>
+            <h1 class="text-3xl font-bold">🛥️ Siloq Maritime Monitoring</h1>
+            <p class="text-sm text-blue-200">Live status, weather & vessel tracking</p>
+        </div>
+        <div id="current-datetime" class="text-right text-lg font-mono"></div>
+    </div>
+</header>
+
+<!-- ALERTS -->
+<div id="alerts-container" class="container mx-auto px-4 mt-4"></div>
+
+<!-- MAIN GRID -->
+<div class="container mx-auto px-4 grid gap-6 mt-6 md:grid-cols-2 lg:grid-cols-3">
+
+    <!-- STAT CARDS -->
+    <div class="bg-white shadow rounded-lg p-6 border-l-4 border-blue-500">
+        <p class="text-sm text-gray-500">Total Vessels</p>
+        <p id="total-vessels" class="text-3xl font-bold">0</p>
+    </div>
+
+    <div class="bg-white shadow rounded-lg p-6 border-l-4 border-green-500">
+        <p class="text-sm text-gray-500">Active Vessels</p>
+        <p id="active-vessels" class="text-3xl font-bold">0</p>
+    </div>
+
+    <div class="bg-white shadow rounded-lg p-6 border-l-4 border-red-500">
+        <p class="text-sm text-gray-500">Emergency Alerts</p>
+        <p id="emergency-alerts" class="text-3xl font-bold">0</p>
+    </div>
+
+</div>
+
+<!-- MAP -->
+<section class="container mx-auto px-4 mt-8">
+    <h2 class="text-2xl font-bold text-gray-800 mb-2">📍 Vessel Locations</h2>
+    <div id="map" class="rounded-lg shadow"></div>
+</section>
+
+<!-- WEATHER & FORECAST -->
+<section class="container mx-auto px-4 mt-8">
+    <h2 class="text-2xl font-bold text-gray-800 mb-2">🌤️ Weather Forecast</h2>
+
+    <div class="grid lg:grid-cols-2 gap-6">
+
+        <div class="bg-white p-6 rounded-lg shadow">
+            <h3 class="text-xl font-bold text-gray-700">Current Conditions</h3>
+            <div id="current-conditions" class="mt-4"></div>
+            <div id="weather-warnings" class="mt-4"></div>
+        </div>
+
+        <div class="bg-white p-6 rounded-lg shadow">
+            <canvas id="weather-chart"></canvas>
+        </div>
+
+    </div>
+</section>
+
+<!-- HISTORY -->
+<section class="container mx-auto px-4 mt-8">
+    <h2 class="text-2xl font-bold text-gray-800 mb-2">📊 Vessel History</h2>
+
+    <div class="bg-white p-6 rounded-lg shadow space-y-4">
+      <div class="flex space-x-2">
+          <select id="history-vessel-select" class="border p-2 rounded w-full"></select>
+          <select id="history-parameter" class="border p-2 rounded">
+              <option value="temperature">Temperature</option>
+              <option value="battery">Battery</option>
+          </select>
+          <button id="load-history" class="bg-blue-600 text-white px-4 rounded">Load</button>
+      </div>
+
+      <canvas id="history-chart"></canvas>
+    </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="text-center text-sm text-gray-600 py-4 mt-10">
+    Maritime Dashboard • Palo, Leyte • Powered by RPi Backend
+</footer>
+
+<!-- SCRIPTS -->
+<script>
+
+    const API_BASE = "https://irisvalencia0326.github.io/siloq-api"; 
+    // 🔥 CHANGE THIS to your Raspberry Pi API endpoint like: 
+    // "http://192.168.1.100:8080"
+
+    // update date/time every second
+    function updateDateTime() {
+        const now = new Date();
+        document.getElementById("current-datetime").textContent =
+            now.toLocaleString();
+    }
+    setInterval(updateDateTime, 1000);
+    updateDateTime();
+
+</script>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+    let map = L.map('map').setView([13.6692,124.4024], 10);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+    let markers = {};
+</script>
+
+<script>
+    async function fetchData() {
+        try {
+            const vesselsRes = await fetch(`${API_BASE}/api/vessels`);
+            const alertsRes  = await fetch(`${API_BASE}/api/alerts`);
+            const weatherRes= await fetch(`${API_BASE}/api/weather`);
+
+            const vessels  = await vesselsRes.json();
+            const alerts   = await alertsRes.json();
+            const weather  = await weatherRes.json();
+
+            updateStats(vessels);
+            updateMap(vessels);
+            updateAlerts(alerts.alerts || []);
+            updateWeather(weather);
+
+        } catch (e) {
+            console.error("Fetch error", e);
+        }
+    }
+
+    function updateStats(vessels) {
+        document.getElementById("total-vessels").textContent = vessels.length;
+        document.getElementById("active-vessels").textContent =
+            vessels.filter(v => v.status === "active").length;
+    }
+
+    function updateMap(vessels) {
+        for (let id in markers) map.removeLayer(markers[id]);
+        markers = {};
+
+        vessels.forEach(v => {
+            if (!v.latitude || !v.longitude) return;
+            const m = L.marker([v.latitude, v.longitude])
+              .addTo(map)
+              .bindPopup(`<strong>${v.boat_name}</strong><br>${v.status}`);
+            markers[v.boat_id] = m;
+        });
+    }
+
+    function updateAlerts(alerts) {
+        document.getElementById("emergency-alerts").textContent = alerts.length;
+        const container = document.getElementById("alerts-container");
+        container.innerHTML = alerts.map(a => `
+            <div class="bg-red-100 border border-red-300 text-red-800 p-3 rounded mb-2">
+                ⚠️ ${a.boat_name} - ${a.alert_type.toUpperCase()}
+            </div>`
+        ).join("");
+    }
+
+    let weatherChart;
+    function updateWeather(weather) {
+        // CURRENT CONDITIONS
+        const hr = weather.hourly;
+        const nowIndex = 0;
+        document.getElementById("current-conditions").innerHTML = `
+            <p class="text-xl font-bold">${hr.temperature_2m[nowIndex]}°C</p>
+            <p>${hr.relative_humidity_2m[nowIndex]}% humidity</p>
+        `;
+
+        // WARNINGS
+        document.getElementById("weather-warnings").innerHTML = `
+            <p class="text-sm text-yellow-700">Wind: ${ (hr.wind_speed_10m[nowIndex]*3.6).toFixed(1) } km/h</p>
+        `;
+
+        // CHART
+        const labels = hr.time.slice(0, 24);
+        const temps  = hr.temperature_2m.slice(0, 24);
+
+        if (weatherChart) weatherChart.destroy();
+        weatherChart = new Chart(document.getElementById("weather-chart"), {
+            type: 'line',
+            data: { labels, datasets: [{ label: 'Temp °C', data: temps }] }
+        });
+    }
+
+    // HISTORY
+    document.getElementById("load-history").onclick = async () => {
+        const vid = document.getElementById("history-vessel-select").value;
+        if (!vid) return alert("Select vessel");
+        const res = await fetch(`${API_BASE}/api/history?boat_id=${vid}`);
+        const js  = await res.json();
+        const data = js.history;
+
+        const labels = data.map(d => new Date(d.timestamp).toLocaleDateString());
+        const vals   = data.map(d => d.temperature);
+
+        new Chart(document.getElementById("history-chart"), {
+            type:'line',
+            data: { labels, datasets: [{ label:"Temp", data:vals }] }
+        });
+    };
+
+    // INIT
+    fetchData();
+    setInterval(fetchData, 15000);
+
+</script>
+
+</body>
+</html>
